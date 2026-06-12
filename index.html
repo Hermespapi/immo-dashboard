@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Immo Dashboard</title>
+  <link rel="stylesheet" href="style.css?v=8">
+</head>
+<body>
+  <div class="layout">
+
+    <!-- ── SIDEBAR ── -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        </div>
+        Immo Dashboard
+      </div>
+      <nav class="side-nav">
+        <button class="nav-item active" data-tab="uebersicht">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          Übersicht
+        </button>
+        <button class="nav-item" data-tab="mieter">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Mieter
+        </button>
+        <button class="nav-item" data-tab="zahlungen">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+          Zahlungen
+        </button>
+        <button class="nav-item" data-tab="warnliste">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          Warnliste <span id="warn-badge"></span>
+        </button>
+      </nav>
+    </aside>
+
+    <!-- ── CONTENT ── -->
+    <main class="content">
+      <header>
+        <div class="header-top">
+          <div>
+            <h1 id="page-title">Übersicht</h1>
+            <p class="subtitle" id="page-subtitle">Mietzahlungen</p>
+          </div>
+          <button class="btn-primary" id="header-action" onclick="headerAction(event)" style="display:none">+ Mieter hinzufügen</button>
+        </div>
+      </header>
+
+      <!-- ── ÜBERSICHT ── -->
+      <div id="tab-uebersicht" class="tab active">
+        <div class="kpi-grid" id="ue-kpis"></div>
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Objekte</h3>
+            <div id="ue-objekt-list"></div>
+          </div>
+          <div class="panel">
+            <h3>Mieter</h3>
+            <div id="ue-mieter-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── MIETER ── -->
+      <div id="tab-mieter" class="tab">
+        <div class="filter-bar filter-bar-2">
+          <input id="m-search" placeholder="Suche Mieter / Objekt..." oninput="renderMieter()">
+          <select id="m-objekt-filter" onchange="renderMieter()"><option value="">Alle Objekte</option></select>
+          <button class="btn-outline" onclick="resetMieterFilter()">Zurücksetzen</button>
+        </div>
+        <div class="table-wrap">
+          <table id="mieter-table">
+            <thead>
+              <tr>
+                <th>Mieter</th>
+                <th>Objekt</th>
+                <th>Fällig am</th>
+                <th>IBAN</th>
+                <th>Mietvertrag</th>
+              </tr>
+            </thead>
+            <tbody id="mieter-tbody"></tbody>
+          </table>
+        </div>
+        <p class="empty-hint" id="mieter-empty">Noch keine Mieter angelegt.</p>
+      </div>
+
+      <!-- ── ZAHLUNGEN ── -->
+      <div id="tab-zahlungen" class="tab">
+        <div class="alert" id="zahlungen-alert" style="display:none"></div>
+        <div class="filter-bar">
+          <input id="z-search" placeholder="Suche Mieter / Objekt..." oninput="renderZahlungen()">
+          <select id="z-status-filter" onchange="renderZahlungen()">
+            <option value="">Alle Stati</option>
+            <option value="bezahlt">Bezahlt</option>
+            <option value="teilzahlung">Teilzahlung</option>
+            <option value="offen">Offen</option>
+            <option value="ueberfaellig">Überfällig</option>
+          </select>
+          <select id="z-objekt-filter" onchange="renderZahlungen()"><option value="">Alle Objekte</option></select>
+          <select id="monat-select" onchange="onMonatChange()"></select>
+          <button class="btn-outline" onclick="resetZahlungenFilter()">Zurücksetzen</button>
+        </div>
+        <div class="table-wrap">
+          <table id="zahlungen-table">
+            <thead>
+              <tr>
+                <th>Mieter</th>
+                <th>Objekt</th>
+                <th class="text-right">Monatsmiete</th>
+                <th>Fällig am</th>
+                <th>Bezahlt am</th>
+                <th class="text-right">Offener Betrag</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="zahlungen-tbody"></tbody>
+          </table>
+        </div>
+        <p class="empty-hint" id="zahlungen-empty" style="display:none">Keine Mieter für diesen Monat gefunden.</p>
+      </div>
+
+      <!-- ── WARNLISTE ── -->
+      <div id="tab-warnliste" class="tab">
+        <div class="toolbar">
+          <div class="filter-inline">
+            <label class="inline-label">Monat</label>
+            <select id="warn-monat-select" onchange="renderWarnliste()"></select>
+          </div>
+        </div>
+        <div id="warn-stats" class="kpi-grid"></div>
+        <div id="warn-cards"></div>
+        <p class="empty-hint success" id="warn-empty" style="display:none">✓ Alle Mietzahlungen für diesen Monat eingegangen.</p>
+
+        <div id="unklar-section" style="display:none">
+          <h3 class="section-title" style="margin-top:2rem">Unklare Zahlungen</h3>
+          <p class="text-muted" style="margin-bottom:.75rem">Eingegangene Beträge ohne eindeutige Zuordnung – bitte manuell zuordnen oder verwerfen.</p>
+          <div id="unklar-cards"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── DIALOGS ── -->
+  <div id="context-menu" class="context-menu" style="display:none"></div>
+  <input type="file" id="ctx-vertrag-input" accept=".pdf,image/*" hidden>
+  <input type="file" id="vertrag-new-input" accept=".pdf,image/*" hidden>
+  <div id="vertrag-status" class="vertrag-status" style="display:none"></div>
+  <div id="overlay" class="overlay" onclick="closeAllDialogs()"></div>
+
+  <dialog id="mieter-dialog">
+    <h3 id="mieter-dialog-title">Mieter hinzufügen</h3>
+    <div class="dialog-note" id="vertrag-attached"></div>
+    <form id="mieter-form" onsubmit="saveMieter(event)">
+      <input type="hidden" id="mieter-id">
+      <label>Name *<input type="text" id="m-name" required placeholder="Max Mustermann"></label>
+      <label>Objekt *<input type="text" id="m-objekt" required placeholder="Musterstr. 1, Berlin"></label>
+      <label>Wohnung / Zimmer<input type="text" id="m-einheit" placeholder="OG links / Zimmer 2"></label>
+      <label>Soll-Miete (€) *<input type="number" id="m-miete" required min="0" step="0.01" placeholder="850.00"></label>
+      <label>Fällig am (Tag) *<input type="number" id="m-faellig" required min="1" max="28" placeholder="1"></label>
+      <label>IBAN<input type="text" id="m-iban" placeholder="DE12 3456 7890 1234 5678 90"></label>
+      <label>Verwendungszweck (Schlüsselwort)<input type="text" id="m-vwz" placeholder="Miete OG links"></label>
+      <label>Mietvertrag (PDF/Bild)<input type="file" id="m-vertrag" accept=".pdf,image/*"></label>
+      <div class="dialog-actions">
+        <button type="button" class="btn-ghost" onclick="closeAllDialogs()">Abbrechen</button>
+        <button type="submit" class="btn-primary">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="zahlung-dialog">
+    <h3>Zahlung eintragen</h3>
+    <form id="zahlung-form" onsubmit="saveZahlung(event)">
+      <input type="hidden" id="z-mieter-id">
+      <input type="hidden" id="z-monat">
+      <label>Mieter<select id="z-mieter-select" onchange="prefillZahlung()"></select></label>
+      <label>Betrag (€) *<input type="number" id="z-betrag" required min="0" step="0.01"></label>
+      <label>Datum *<input type="date" id="z-datum" required></label>
+      <label>Notiz<input type="text" id="z-notiz" placeholder="z.B. bar erhalten"></label>
+      <div class="dialog-actions">
+        <button type="button" class="btn-ghost" onclick="closeAllDialogs()">Abbrechen</button>
+        <button type="submit" class="btn-primary">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js?v=10"></script>
+</body>
+</html>
