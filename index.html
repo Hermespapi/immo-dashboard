@@ -7,7 +7,22 @@
   <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
-  <div class="layout">
+  <div id="auth-screen" class="auth-screen">
+    <form class="auth-card" onsubmit="loginWithEmail(event)">
+      <div class="auth-logo">⌂</div>
+      <h1>Immo Dashboard</h1>
+      <p>Bitte mit E-Mail und Passwort anmelden.</p>
+      <label>E-Mail<input type="email" id="auth-email" required autocomplete="email" placeholder="name@example.com"></label>
+      <label>Passwort<input type="password" id="auth-password" required autocomplete="current-password" minlength="6"></label>
+      <div id="auth-status" class="auth-status" style="display:none"></div>
+      <button type="submit" class="btn-primary">Anmelden</button>
+      <button type="button" class="btn-outline" onclick="signUpWithEmail()">Konto erstellen</button>
+      <button type="button" class="btn-outline" onclick="resendConfirmationEmail()">Bestätigungs-E-Mail erneut senden</button>
+      <p class="auth-hint">Die Daten werden nach dem Login in Supabase gespeichert.</p>
+    </form>
+  </div>
+
+  <div class="layout" style="display:none">
 
     <!-- ── SIDEBAR ── -->
     <aside class="sidebar">
@@ -45,7 +60,11 @@
             <h1 id="page-title">Übersicht</h1>
             <p class="subtitle" id="page-subtitle">Mietzahlungen</p>
           </div>
-          <button class="btn-primary" id="header-action" onclick="headerAction(event)" style="display:none">+ Mieter hinzufügen</button>
+          <div class="user-tools">
+            <span id="user-label" class="user-label"></span>
+            <button class="btn-outline" id="logout-btn" onclick="logout()">Logout</button>
+            <button class="btn-primary" id="header-action" onclick="headerAction(event)" style="display:none">+ Mieter hinzufügen</button>
+          </div>
         </div>
       </header>
 
@@ -148,6 +167,7 @@
   <div id="context-menu" class="context-menu" style="display:none"></div>
   <input type="file" id="ctx-vertrag-input" accept=".pdf,image/*" hidden>
   <input type="file" id="vertrag-new-input" accept=".pdf,image/*" hidden>
+  <input type="file" id="ctx-beleg-input" accept=".pdf,image/*" hidden>
   <div id="vertrag-status" class="vertrag-status" style="display:none"></div>
   <div id="overlay" class="overlay" onclick="closeAllDialogs()"></div>
 
@@ -180,6 +200,8 @@
       <label>Betrag (€) *<input type="number" id="z-betrag" required min="0" step="0.01"></label>
       <label>Datum *<input type="date" id="z-datum" required></label>
       <label>Notiz<input type="text" id="z-notiz" placeholder="z.B. bar erhalten"></label>
+      <label>Beleg (PDF/Bild)<input type="file" id="z-beleg" accept=".pdf,image/*"></label>
+      <div class="dialog-note" id="z-beleg-note"></div>
       <div class="dialog-actions">
         <button type="button" class="btn-ghost" onclick="closeAllDialogs()">Abbrechen</button>
         <button type="submit" class="btn-primary">Speichern</button>
@@ -187,6 +209,6 @@
     </form>
   </dialog>
 
-  <script src="app.js?v=10"></script>
+  <script type="module" src="app.js?v=14"></script>
 </body>
 </html>

@@ -29,9 +29,14 @@ pnpm-debug.log*
 # Local editor/runtime state
 .vscode/
 .idea/
+.hermes/
+.claude/
 
 # Local dashboard uploads / private documents
 uploads/
 documents/
 contracts/
 vertraege/
+
+# Temporary setup snippets
+supabase-*-only.sql

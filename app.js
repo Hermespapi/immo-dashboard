@@ -1,41 +1,256 @@
-/* ── STATE ── */
-const DEFAULT_STATE = {
-  mieter: [
-    {
-      id: 'mieter-beispiel-001',
-      name: 'Beispiel Mieter',
-      objekt: 'Musterstraße 1, Berlin',
-      einheit: '1. OG links',
-      miete: 850,
-      faellig: 3,
-      iban: '',
-      vwz: 'Miete Beispiel Mieter',
-      vertragName: '',
-      vertragData: '',
-    },
-  ],
-  zahlungen: {},
-  unklar: {},
-};
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
-let state = loadState();
+/* ── SUPABASE / STATE ── */
+const STORAGE_BUCKET = 'dokumente';
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const LOCAL_STORAGE_KEY = 'immo-dashboard';
+
+function hasSupabasePlaceholder(value) {
+  return !value || /DEIN|DEINE|PLACEHOLDER|example\.supabase\.co|anon-public-key/i.test(value);
+}
+
+const configuredSupabase = !hasSupabasePlaceholder(SUPABASE_URL) && !hasSupabasePlaceholder(SUPABASE_ANON_KEY);
+if (!configuredSupabase) {
+  console.warn('Supabase ist noch nicht vollständig konfiguriert. Bitte config.js mit Project URL und anon public key ausfüllen.');
+}
+
+const supabase = createClient(
+  configuredSupabase ? SUPABASE_URL : 'https://example.supabase.co',
+  configuredSupabase ? SUPABASE_ANON_KEY : 'placeholder-anon-key'
+);
+const DEFAULT_STATE = { mieter: [], zahlungen: {} };
+let state = structuredClone(DEFAULT_STATE);
 let currentTab = 'uebersicht';
 let pendingVertrag = null;
+let currentUser = null;
+let isBootstrapping = true;
 
-function loadState() {
-  const raw = localStorage.getItem('immo-dashboard');
-  let s = raw ? JSON.parse(raw) : structuredClone(DEFAULT_STATE);
+function normalizeState(s) {
+  if (!s || typeof s !== 'object') s = structuredClone(DEFAULT_STATE);
   if (!Array.isArray(s.mieter)) s.mieter = [];
-  if (!s.zahlungen) s.zahlungen = {};
-  if (!s.unklar) s.unklar = {};
+  if (!s.zahlungen || typeof s.zahlungen !== 'object') s.zahlungen = {};
+  s.unklar = {}; // Alte lokale Hilfsdaten werden nicht mehr cloudgespeichert.
   return s;
 }
 
-function saveState() {
+function setStatus(msg, type = 'info') {
+  const el = document.getElementById('auth-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = 'auth-status ' + type;
+  el.style.display = msg ? 'block' : 'none';
+}
+
+function showApp(user) {
+  currentUser = user;
+  document.getElementById('auth-screen').style.display = 'none';
+  document.querySelector('.layout').style.display = '';
+  const userLabel = document.getElementById('user-label');
+  if (userLabel) userLabel.textContent = user.email || 'Angemeldet';
+}
+
+function showLogin() {
+  currentUser = null;
+  state = structuredClone(DEFAULT_STATE);
+  document.getElementById('auth-screen').style.display = 'grid';
+  document.querySelector('.layout').style.display = 'none';
+  const userLabel = document.getElementById('user-label');
+  if (userLabel) userLabel.textContent = '';
+}
+
+async function requireSupabaseReady() {
+  if (!configuredSupabase) {
+    const missing = [];
+    if (hasSupabasePlaceholder(SUPABASE_URL)) missing.push('Project URL');
+    if (hasSupabasePlaceholder(SUPABASE_ANON_KEY)) missing.push('anon public key');
+    throw new Error(`Supabase ist fast verbunden. Bitte in config.js noch ${missing.join(' und ')} eintragen.`);
+  }
+}
+
+async function initAuth() {
+  await requireSupabaseReady();
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  if (data.session?.user) await afterLogin(data.session.user);
+  else showLogin();
+  supabase.auth.onAuthStateChange(async (_event, session) => {
+    if (isBootstrapping) return;
+    if (session?.user) await afterLogin(session.user);
+    else showLogin();
+  });
+}
+
+async function afterLogin(user) {
+  showApp(user);
+  setStatus('Daten werden geladen…');
+  await loadCloudState();
+  await offerLocalMigration();
+  renderAll();
+  setStatus('');
+}
+
+async function loginWithEmail(e) {
+  e.preventDefault();
   try {
-    localStorage.setItem('immo-dashboard', JSON.stringify(state));
-  } catch (e) {
-    alert('Speicher voll – die Datei ist evtl. zu groß und konnte nicht gespeichert werden.');
+    await requireSupabaseReady();
+    setStatus('Anmeldung läuft…');
+    const email = document.getElementById('auth-email').value.trim();
+    const password = document.getElementById('auth-password').value;
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message || 'Anmeldung fehlgeschlagen.', 'error');
+  }
+}
+
+async function signUpWithEmail() {
+  try {
+    await requireSupabaseReady();
+    const email = document.getElementById('auth-email').value.trim();
+    const password = document.getElementById('auth-password').value;
+    if (!email || !password) return setStatus('Bitte E-Mail und Passwort eintragen.', 'error');
+    setStatus('Konto wird angelegt…');
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: window.location.origin + window.location.pathname }
+    });
+    if (error) throw error;
+    setStatus('Konto angelegt. Falls E-Mail-Bestätigung aktiv ist: bitte Bestätigungslink öffnen; danach hier anmelden.', 'success');
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message || 'Konto konnte nicht angelegt werden.', 'error');
+  }
+}
+
+async function resendConfirmationEmail() {
+  try {
+    await requireSupabaseReady();
+    const email = document.getElementById('auth-email').value.trim();
+    if (!email) return setStatus('Bitte zuerst die E-Mail-Adresse eintragen.', 'error');
+    setStatus('Bestätigungs-E-Mail wird erneut gesendet…');
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email,
+      options: { emailRedirectTo: window.location.origin + window.location.pathname }
+    });
+    if (error) throw error;
+    setStatus('Bestätigungs-E-Mail wurde erneut gesendet. Bitte Postfach prüfen.', 'success');
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message || 'Bestätigungs-E-Mail konnte nicht erneut gesendet werden.', 'error');
+  }
+}
+
+async function logout() {
+  await supabase.auth.signOut();
+  showLogin();
+}
+
+async function loadCloudState() {
+  const [{ data: mieter, error: mErr }, { data: zahlungen, error: zErr }] = await Promise.all([
+    supabase.from('mieter').select('*').order('created_at', { ascending: true }),
+    supabase.from('zahlungen').select('*').order('monat', { ascending: false }),
+  ]);
+  if (mErr) throw mErr;
+  if (zErr) throw zErr;
+  state = normalizeState({ mieter: (mieter || []).map(rowToMieter), zahlungen: rowsToZahlungen(zahlungen || []) });
+}
+
+function rowToMieter(row) {
+  return { id: row.id, name: row.name || '', objekt: row.objekt || '', einheit: row.einheit || '', miete: Number(row.miete || 0), faellig: Number(row.faellig || 1), iban: row.iban || '', vwz: row.vwz || '', vertragName: fileNameFromPath(row.vertrag_path), vertragPath: row.vertrag_path || '' };
+}
+
+function rowsToZahlungen(rows) {
+  const out = {};
+  rows.forEach(row => {
+    if (!out[row.monat]) out[row.monat] = {};
+    out[row.monat][row.mieter_id] = { id: row.id, bezahlt: Number(row.bezahlt || 0), datum: row.datum || '', notiz: row.notiz || '', belegName: fileNameFromPath(row.beleg_path), belegPath: row.beleg_path || '' };
+  });
+  return out;
+}
+
+function mieterToRow(m) {
+  return { id: m.id, user_id: currentUser.id, name: m.name, objekt: m.objekt, einheit: m.einheit || null, miete: m.miete || 0, faellig: m.faellig || 1, iban: m.iban || null, vwz: m.vwz || null, vertrag_path: m.vertragPath || null };
+}
+
+function zahlungToRow(mieterId, monat, entry) {
+  return { id: entry.id || crypto.randomUUID(), user_id: currentUser.id, mieter_id: mieterId, monat, bezahlt: entry.bezahlt || 0, datum: entry.datum || null, notiz: entry.notiz || null, beleg_path: entry.belegPath || null };
+}
+
+async function upsertMieter(m) {
+  const { error } = await supabase.from('mieter').upsert(mieterToRow(m), { onConflict: 'id' });
+  if (error) throw error;
+}
+async function upsertZahlung(mieterId, monat, entry) {
+  const row = zahlungToRow(mieterId, monat, entry);
+  const { data, error } = await supabase.from('zahlungen').upsert(row, { onConflict: 'mieter_id,monat' }).select('id').single();
+  if (error) throw error;
+  entry.id = data.id;
+}
+function saveState() { /* Cloud-Speicherung erfolgt direkt in den jeweiligen upsert/delete-Funktionen. */ }
+function renderAll() { renderUebersicht(); renderMieter(); renderZahlungen(); renderWarnliste(); updateWarnBadge(); }
+function safeFileName(name) { return (name || 'datei').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 120); }
+function fileNameFromPath(path) { if (!path) return ''; return decodeURIComponent(String(path).split('/').pop() || ''); }
+function storagePath(kind, file, { mieterId, monat } = {}) { const folder = kind === 'vertrag' ? `vertraege/${mieterId}` : `belege/${mieterId}/${monat}`; return `${currentUser.id}/${folder}/${Date.now()}-${safeFileName(file.name)}`; }
+async function uploadStorageFile(kind, file, meta) {
+  if (!file) return '';
+  if (file.size > MAX_FILE_SIZE) throw new Error('Datei zu groß (max. 5 MB).');
+  const path = storagePath(kind, file, meta);
+  const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type || 'application/octet-stream' });
+  if (error) throw error;
+  return path;
+}
+async function openStorageFile(path, title) {
+  if (!path) return alert('Keine Datei hinterlegt.');
+  const w = window.open('', '_blank');
+  try {
+    const { data, error } = await supabase.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 10);
+    if (error) throw error;
+    if (w) w.document.write(`<title>${title || 'Dokument'}</title><iframe src="${data.signedUrl}" style="position:fixed;inset:0;border:0;width:100%;height:100%"></iframe>`);
+    else window.open(data.signedUrl, '_blank');
+  } catch (err) { if (w) w.close(); console.error(err); alert('Datei konnte nicht geöffnet werden: ' + (err.message || err)); }
+}
+function dataUrlToFile(dataUrl, name) {
+  const [header, base64] = String(dataUrl).split(',');
+  const mime = (header.match(/data:(.*?);base64/) || [])[1] || 'application/octet-stream';
+  const binary = atob(base64 || '');
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], name || 'import-datei', { type: mime });
+}
+function isUuid(id) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id || ''); }
+async function offerLocalMigration() {
+  const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+  if (!raw || localStorage.getItem(`${LOCAL_STORAGE_KEY}-imported-${currentUser.id}`)) return;
+  if (!confirm('Es wurden lokale Browser-Daten gefunden. Jetzt einmalig in Supabase importieren?')) return;
+  await importLocalStorage(raw);
+  localStorage.setItem(`${LOCAL_STORAGE_KEY}-imported-${currentUser.id}`, new Date().toISOString());
+  localStorage.removeItem(LOCAL_STORAGE_KEY);
+  await loadCloudState();
+  alert('Import abgeschlossen. Die lokalen Browser-Daten wurden entfernt; künftig speichert die App in Supabase.');
+}
+async function importLocalStorage(raw) {
+  const local = normalizeState(JSON.parse(raw));
+  const idMap = new Map();
+  for (const old of local.mieter) {
+    const newId = isUuid(old.id) ? old.id : crypto.randomUUID();
+    idMap.set(old.id, newId);
+    const m = { id: newId, name: old.name || '', objekt: old.objekt || '', einheit: old.einheit || '', miete: Number(old.miete || 0), faellig: Number(old.faellig || 1), iban: old.iban || '', vwz: old.vwz || '', vertragName: old.vertragName || '', vertragPath: '' };
+    const oldVertragData = old.vertragData || old.vertragPath;
+    if (oldVertragData) { const f = dataUrlToFile(oldVertragData, old.vertragName || 'mietvertrag.pdf'); m.vertragPath = await uploadStorageFile('vertrag', f, { mieterId: newId }); m.vertragName = f.name; }
+    await upsertMieter(m);
+  }
+  for (const [monat, entries] of Object.entries(local.zahlungen || {})) {
+    for (const [oldMieterId, oldEntry] of Object.entries(entries || {})) {
+      const mieterId = idMap.get(oldMieterId); if (!mieterId) continue;
+      const entry = { bezahlt: Number(oldEntry.bezahlt || 0), datum: oldEntry.datum || '', notiz: oldEntry.notiz || '', belegName: oldEntry.belegName || '', belegPath: '' };
+      const oldBelegData = oldEntry.belegData || oldEntry.belegPath;
+      if (oldBelegData) { const f = dataUrlToFile(oldBelegData, oldEntry.belegName || 'beleg.pdf'); entry.belegPath = await uploadStorageFile('beleg', f, { mieterId, monat }); entry.belegName = f.name; }
+      await upsertZahlung(mieterId, monat, entry);
+    }
   }
 }
 
@@ -168,29 +383,18 @@ function headerAction(e) {
 }
 
 /* ── INIT ── */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   const cur = currentMonthKey();
   fillMonatSelect('monat-select', cur);
   fillMonatSelect('warn-monat-select', cur);
-
   updateHeader('uebersicht');
-  renderUebersicht();
-  renderMieter();
-  renderZahlungen();
-  renderWarnliste();
-  updateWarnBadge();
 
   document.addEventListener('click', hideContextMenu);
   window.addEventListener('scroll', hideContextMenu, true);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') hideContextMenu(); });
-  document.getElementById('ctx-vertrag-input').addEventListener('change', e => {
-    if (ctxVertragMieterId && e.target.files[0]) uploadVertrag(ctxVertragMieterId, e.target);
-    e.target.value = '';
-  });
-  document.getElementById('vertrag-new-input').addEventListener('change', e => {
-    if (e.target.files[0]) handleVertragFile(e.target.files[0]);
-    e.target.value = '';
-  });
+  document.getElementById('ctx-vertrag-input').addEventListener('change', e => { if (ctxVertragMieterId && e.target.files[0]) uploadVertrag(ctxVertragMieterId, e.target); e.target.value = ''; });
+  document.getElementById('vertrag-new-input').addEventListener('change', e => { if (e.target.files[0]) handleVertragFile(e.target.files[0]); e.target.value = ''; });
+  document.getElementById('ctx-beleg-input').addEventListener('change', e => { if (ctxBelegTarget && e.target.files[0]) uploadBeleg(ctxBelegTarget.mieterId, ctxBelegTarget.monat, e.target); e.target.value = ''; });
 
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -206,6 +410,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (currentTab === 'warnliste') renderWarnliste();
     });
   });
+
+  try { await initAuth(); }
+  catch (err) { console.error(err); showLogin(); setStatus(err.message || 'Supabase konnte nicht initialisiert werden.', 'error'); }
+  finally { isBootstrapping = false; }
 });
 
 /* ── MIETER (STAMMDATEN) ── */
@@ -241,7 +449,7 @@ function renderMieter() {
       <td>${m.objekt}${m.einheit ? ' · ' + m.einheit : ''}</td>
       <td>${m.faellig}. des Monats</td>
       <td class="text-muted">${m.iban ? formatIBAN(m.iban) : '—'}</td>
-      <td class="text-muted">${m.vertragData ? 'hinterlegt' : '—'}</td>
+      <td class="text-muted">${m.vertragPath ? 'hinterlegt' : '—'}</td>
     </tr>
   `).join('');
 }
@@ -280,86 +488,56 @@ function openMieterDialog(id) {
   d.style.display = 'block';
 }
 
-function saveMieter(e) {
+async function saveMieter(e) {
   e.preventDefault();
-  const id = document.getElementById('mieter-id').value;
-  const existing = id ? state.mieter.find(x => x.id === id) : null;
-  const m = {
-    id: id || crypto.randomUUID(),
-    name: document.getElementById('m-name').value.trim(),
-    objekt: document.getElementById('m-objekt').value.trim(),
-    einheit: document.getElementById('m-einheit').value.trim(),
-    miete: parseFloat(document.getElementById('m-miete').value),
-    faellig: parseInt(document.getElementById('m-faellig').value),
-    iban: document.getElementById('m-iban').value.replace(/\s/g, '').toUpperCase(),
-    vwz: document.getElementById('m-vwz').value.trim(),
-    vertragName: existing ? existing.vertragName : '',
-    vertragData: existing ? existing.vertragData : '',
-  };
-
-  const file = document.getElementById('m-vertrag').files[0];
-  const finalize = () => {
-    if (id) {
-      const idx = state.mieter.findIndex(x => x.id === id);
-      state.mieter[idx] = m;
-    } else {
-      state.mieter.push(m);
-    }
-    saveState();
-    closeAllDialogs();
-    renderMieter();
-    renderZahlungen();
-    updateWarnBadge();
-  };
-
-  if (file) {
-    if (file.size > 3 * 1024 * 1024) { alert('Datei zu groß (max. 3 MB).'); return; }
-    const reader = new FileReader();
-    reader.onload = ev => { m.vertragName = file.name; m.vertragData = ev.target.result; finalize(); };
-    reader.readAsDataURL(file);
-  } else if (pendingVertrag) {
-    m.vertragName = pendingVertrag.name;
-    m.vertragData = pendingVertrag.data;
-    finalize();
-  } else {
-    finalize();
-  }
+  try {
+    const id = document.getElementById('mieter-id').value;
+    const existing = id ? state.mieter.find(x => x.id === id) : null;
+    const m = {
+      id: id || crypto.randomUUID(),
+      name: document.getElementById('m-name').value.trim(),
+      objekt: document.getElementById('m-objekt').value.trim(),
+      einheit: document.getElementById('m-einheit').value.trim(),
+      miete: parseFloat(document.getElementById('m-miete').value),
+      faellig: parseInt(document.getElementById('m-faellig').value),
+      iban: document.getElementById('m-iban').value.replace(/\s/g, '').toUpperCase(),
+      vwz: document.getElementById('m-vwz').value.trim(),
+      vertragName: existing ? existing.vertragName : '',
+      vertragPath: existing ? existing.vertragPath : '',
+    };
+    const file = document.getElementById('m-vertrag').files[0] || (pendingVertrag && pendingVertrag.file);
+    if (file) { m.vertragPath = await uploadStorageFile('vertrag', file, { mieterId: m.id }); m.vertragName = file.name; }
+    if (id) state.mieter[state.mieter.findIndex(x => x.id === id)] = m; else state.mieter.push(m);
+    await upsertMieter(m);
+    closeAllDialogs(); renderMieter(); renderZahlungen(); renderUebersicht(); updateWarnBadge();
+  } catch (err) { console.error(err); alert('Mieter konnte nicht gespeichert werden: ' + (err.message || err)); }
 }
 
-function deleteMieter(id) {
+async function deleteMieter(id) {
   if (!confirm('Mieter wirklich löschen?')) return;
-  state.mieter = state.mieter.filter(m => m.id !== id);
-  saveState();
-  renderMieter();
-  renderZahlungen();
-  updateWarnBadge();
+  try {
+    const { error } = await supabase.from('mieter').delete().eq('id', id);
+    if (error) throw error;
+    state.mieter = state.mieter.filter(m => m.id !== id);
+    Object.keys(state.zahlungen).forEach(monat => { delete state.zahlungen[monat][id]; });
+    renderMieter(); renderZahlungen(); renderUebersicht(); updateWarnBadge();
+  } catch (err) { console.error(err); alert('Mieter konnte nicht gelöscht werden: ' + (err.message || err)); }
 }
 
 /* ── MIETVERTRAG / BELEG ── */
-function uploadVertrag(mieterId, input) {
-  const file = input.files[0];
-  if (!file) return;
-  if (file.size > 3 * 1024 * 1024) { alert('Datei zu groß (max. 3 MB).'); input.value = ''; return; }
-  const reader = new FileReader();
-  reader.onload = ev => {
-    const m = state.mieter.find(x => x.id === mieterId);
-    m.vertragName = file.name;
-    m.vertragData = ev.target.result;
-    saveState();
-    renderMieter();
-    renderZahlungen();
-  };
-  reader.readAsDataURL(file);
+async function uploadVertrag(mieterId, input) {
+  const file = input.files[0]; if (!file) return;
+  try {
+    const m = state.mieter.find(x => x.id === mieterId); if (!m) return;
+    m.vertragPath = await uploadStorageFile('vertrag', file, { mieterId }); m.vertragName = file.name;
+    await upsertMieter(m); renderMieter(); renderZahlungen(); renderUebersicht();
+  } catch (err) { console.error(err); alert('Mietvertrag konnte nicht hochgeladen werden: ' + (err.message || err)); }
 }
 
-function pruefenVertrag(mieterId) {
+async function pruefenVertrag(mieterId) {
   const m = state.mieter.find(x => x.id === mieterId);
-  if (m && m.vertragData) {
-    const w = window.open('', '_blank');
-    w.document.write(`<title>${m.vertragName || 'Mietvertrag'}</title><iframe src="${m.vertragData}" style="position:fixed;inset:0;border:0;width:100%;height:100%"></iframe>`);
-  } else {
-    alert('Kein Mietvertrag hinterlegt. Bitte in den Stammdaten (Mieter bearbeiten) hochladen.');
-  }
+  if (m && m.vertragPath) await openStorageFile(m.vertragPath, m.vertragName || 'Mietvertrag');
+  else alert('Kein Mietvertrag hinterlegt. Bitte in den Stammdaten (Mieter bearbeiten) hochladen.');
 }
 
 /* ── ZAHLUNGEN ── */
@@ -457,6 +635,10 @@ function openZahlungDialog(mieterId, monat) {
   const ex = (getZahlungenForMonth(curMonat)[mieterId]) || {};
   document.getElementById('z-datum').value = ex.datum ? toISO(ex.datum) : new Date().toISOString().split('T')[0];
   document.getElementById('z-notiz').value = ex.notiz || '';
+  document.getElementById('z-beleg').value = '';
+  const note = document.getElementById('z-beleg-note');
+  if (ex.belegName) { note.textContent = '📎 Beleg hinterlegt: ' + ex.belegName; note.style.display = 'block'; }
+  else { note.style.display = 'none'; }
   prefillZahlung();
   document.getElementById('overlay').classList.add('open');
   document.getElementById('zahlung-dialog').style.display = 'block';
@@ -475,33 +657,54 @@ function prefillZahlung() {
   document.getElementById('z-betrag').value = ex.bezahlt != null && ex.bezahlt > 0 ? ex.bezahlt : (m ? m.miete : '');
 }
 
-function saveZahlung(e) {
+async function saveZahlung(e) {
   e.preventDefault();
-  const mieterId = document.getElementById('z-mieter-select').value;
-  const monat = document.getElementById('z-monat').value || document.getElementById('monat-select').value;
-  if (!state.zahlungen[monat]) state.zahlungen[monat] = {};
-  const ex = state.zahlungen[monat][mieterId] || {};
-  state.zahlungen[monat][mieterId] = {
-    bezahlt: parseFloat(document.getElementById('z-betrag').value),
-    datum: document.getElementById('z-datum').value,
-    notiz: document.getElementById('z-notiz').value,
-    belegName: ex.belegName || '',
-    belegData: ex.belegData || '',
-  };
-  saveState();
-  closeAllDialogs();
-  renderZahlungen();
-  renderWarnliste();
-  updateWarnBadge();
+  try {
+    const mieterId = document.getElementById('z-mieter-select').value;
+    const monat = document.getElementById('z-monat').value || document.getElementById('monat-select').value;
+    if (!state.zahlungen[monat]) state.zahlungen[monat] = {};
+    const ex = state.zahlungen[monat][mieterId] || {};
+    const entry = { id: ex.id, bezahlt: parseFloat(document.getElementById('z-betrag').value), datum: document.getElementById('z-datum').value, notiz: document.getElementById('z-notiz').value, belegName: ex.belegName || '', belegPath: ex.belegPath || '' };
+    const file = document.getElementById('z-beleg').files[0];
+    if (file) { entry.belegPath = await uploadStorageFile('beleg', file, { mieterId, monat }); entry.belegName = file.name; }
+    state.zahlungen[monat][mieterId] = entry;
+    await upsertZahlung(mieterId, monat, entry);
+    closeAllDialogs(); renderZahlungen(); renderWarnliste(); renderUebersicht(); updateWarnBadge();
+  } catch (err) { console.error(err); alert('Zahlung konnte nicht gespeichert werden: ' + (err.message || err)); }
 }
 
-function deleteZahlung(mieterId, monat) {
+/* Beleg pro Zahlung */
+let ctxBelegTarget = null;
+
+function triggerBelegUpload(mieterId, monat) {
+  ctxBelegTarget = { mieterId, monat };
+  document.getElementById('ctx-beleg-input').click();
+}
+
+async function uploadBeleg(mieterId, monat, input) {
+  const file = input.files[0]; if (!file) return;
+  try {
+    if (!state.zahlungen[monat]) state.zahlungen[monat] = {};
+    const ex = state.zahlungen[monat][mieterId] || { bezahlt: 0, datum: '', notiz: '' };
+    ex.belegPath = await uploadStorageFile('beleg', file, { mieterId, monat }); ex.belegName = file.name;
+    state.zahlungen[monat][mieterId] = ex;
+    await upsertZahlung(mieterId, monat, ex); renderZahlungen();
+  } catch (err) { console.error(err); alert('Beleg konnte nicht hochgeladen werden: ' + (err.message || err)); }
+}
+
+async function openBeleg(mieterId, monat) {
+  const ex = (getZahlungenForMonth(monat)[mieterId]) || {};
+  if (ex.belegPath) await openStorageFile(ex.belegPath, ex.belegName || 'Beleg'); else alert('Kein Beleg hinterlegt.');
+}
+
+async function deleteZahlung(mieterId, monat) {
   if (!confirm('Zahlung löschen?')) return;
-  if (state.zahlungen[monat]) delete state.zahlungen[monat][mieterId];
-  saveState();
-  renderZahlungen();
-  renderWarnliste();
-  updateWarnBadge();
+  try {
+    const { error } = await supabase.from('zahlungen').delete().eq('mieter_id', mieterId).eq('monat', monat);
+    if (error) throw error;
+    if (state.zahlungen[monat]) delete state.zahlungen[monat][mieterId];
+    renderZahlungen(); renderWarnliste(); renderUebersicht(); updateWarnBadge();
+  } catch (err) { console.error(err); alert('Zahlung konnte nicht gelöscht werden: ' + (err.message || err)); }
 }
 
 /* ── WARNLISTE / AUSWERTUNG ── */
@@ -617,7 +820,7 @@ function assignUnklar(monat, i) {
     datum: u.datum,
     notiz: 'Manuell zugeordnet: ' + (u.vwz || ''),
     belegName: ex.belegName || '',
-    belegData: ex.belegData || '',
+    belegPath: ex.belegPath || '',
   };
   state.unklar[monat].splice(i, 1);
   saveState();
@@ -661,15 +864,20 @@ function renderUebersicht() {
     return;
   }
 
-  const einheiten = state.mieter.length;
   const mieterCount = new Set(state.mieter.map(m => m.name.toLowerCase())).size;
   const objekte = [...new Set(state.mieter.map(m => m.objekt).filter(Boolean))];
-  const vertraege = state.mieter.filter(m => m.vertragData).length;
+
+  const monat = currentMonthKey();
+  const z = getZahlungenForMonth(monat);
+  const ausstehend = state.mieter.filter(m => {
+    const bezahlt = (z[m.id] || {}).bezahlt || 0;
+    return effectiveStatus(m, bezahlt, monat) !== 'bezahlt';
+  }).length;
 
   kpis.innerHTML = `
     <div class="kpi"><div class="label">Mieter</div><div class="value">${mieterCount}</div></div>
     <div class="kpi"><div class="label">Objekte</div><div class="value">${objekte.length}</div></div>
-    <div class="kpi accent"><div class="label">Mietverträge</div><div class="value">${vertraege}/${einheiten}</div></div>
+    <div class="kpi ${ausstehend > 0 ? 'red' : 'green'}"><div class="label">Ausstehende Zahlungen</div><div class="value">${ausstehend}</div></div>
   `;
 
   objektList.innerHTML = objekte.map(o => {
@@ -687,7 +895,7 @@ function renderUebersicht() {
         <div class="mini-main">${m.name}</div>
         <div class="mini-sub">${m.objekt}${m.einheit ? ' · ' + m.einheit : ''}</div>
       </div>
-      <div class="mini-right">${m.vertragData ? '<span class="badge badge-success">Vertrag</span>' : '<span class="badge badge-muted">kein Vertrag</span>'}</div>
+      <div class="mini-right">${m.vertragPath ? '<span class="badge badge-success">Vertrag</span>' : '<span class="badge badge-muted">kein Vertrag</span>'}</div>
     </div>
   `).join('');
 }
@@ -736,8 +944,8 @@ function mieterContextMenu(e, id) {
   const items = [
     { label: 'Bearbeiten', action: () => openMieterDialog(id) },
   ];
-  if (m.vertragData) items.push({ label: 'Mietvertrag öffnen', action: () => pruefenVertrag(id) });
-  items.push({ label: m.vertragData ? 'Mietvertrag ersetzen…' : 'Mietvertrag hochladen…', action: () => triggerVertragUpload(id) });
+  if (m.vertragPath) items.push({ label: 'Mietvertrag öffnen', action: () => pruefenVertrag(id) });
+  items.push({ label: m.vertragPath ? 'Mietvertrag ersetzen…' : 'Mietvertrag hochladen…', action: () => triggerVertragUpload(id) });
   items.push('sep');
   items.push({ label: 'Mieter löschen', danger: true, action: () => deleteMieter(id) });
   showContextMenu(e, items);
@@ -746,14 +954,18 @@ function mieterContextMenu(e, id) {
 function zahlungContextMenu(e, mieterId, monat) {
   const m = state.mieter.find(x => x.id === mieterId);
   if (!m) return;
-  const bezahlt = ((getZahlungenForMonth(monat)[mieterId]) || {}).bezahlt || 0;
+  const eintrag = (getZahlungenForMonth(monat)[mieterId]) || {};
+  const bezahlt = eintrag.bezahlt || 0;
   const items = [
     { label: 'Zahlung eintragen', action: () => openZahlungDialog(mieterId, monat) },
   ];
   if (bezahlt > 0) items.push({ label: 'Zahlung löschen', danger: true, action: () => deleteZahlung(mieterId, monat) });
   items.push('sep');
+  if (eintrag.belegPath) items.push({ label: 'Beleg öffnen', action: () => openBeleg(mieterId, monat) });
+  items.push({ label: eintrag.belegPath ? 'Beleg ersetzen…' : 'Beleg auswählen…', action: () => triggerBelegUpload(mieterId, monat) });
+  items.push('sep');
   items.push({ label: 'Mieter bearbeiten', action: () => openMieterDialog(mieterId) });
-  if (m.vertragData) items.push({ label: 'Mietvertrag öffnen', action: () => pruefenVertrag(mieterId) });
+  if (m.vertragPath) items.push({ label: 'Mietvertrag öffnen', action: () => pruefenVertrag(mieterId) });
   showContextMenu(e, items);
 }
 
@@ -837,14 +1049,13 @@ async function ocrImage(file) {
 
 async function handleVertragFile(file) {
   if (!file) return;
-  if (file.size > 3 * 1024 * 1024) { alert('Datei zu groß (max. 3 MB).'); return; }
+  if (file.size > MAX_FILE_SIZE) { alert('Datei zu groß (max. 5 MB).'); return; }
   const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
   const isImg = /^image\//.test(file.type) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
 
   showStatus('📄 Mietvertrag wird gelesen…');
-  let dataURL = '', text = '';
+  let text = '';
   try {
-    dataURL = await readAsDataURL(file);
     if (isPdf) {
       const buf = await readAsArrayBuffer(file);
       text = await extractPdfText(buf);
@@ -863,7 +1074,7 @@ async function handleVertragFile(file) {
   }
 
   const parsed = text ? parseVertragText(text) : {};
-  pendingVertrag = dataURL ? { name: file.name, data: dataURL } : null;
+  pendingVertrag = { name: file.name, file };
 
   openMieterDialog();
   applyParsedToDialog(parsed);
@@ -955,3 +1166,13 @@ function parseVertragText(text) {
 
   return res;
 }
+
+
+/* ── GLOBALS FÜR INLINE-HANDLER ── */
+Object.assign(window, {
+  loginWithEmail, signUpWithEmail, resendConfirmationEmail, logout,
+  headerAction, renderMieter, resetMieterFilter, saveMieter, closeAllDialogs,
+  onMonatChange, renderZahlungen, resetZahlungenFilter, saveZahlung, prefillZahlung,
+  renderWarnliste, assignUnklar, dismissUnklar,
+  mieterContextMenu, zahlungContextMenu,
+});
