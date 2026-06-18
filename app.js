@@ -26,6 +26,10 @@ let pendingVertrag = null;
 let currentUser = null;
 let isBootstrapping = true;
 
+function authRedirectUrl() {
+  return new URL('bestaetigt.html', window.location.href).href;
+}
+
 function normalizeState(s) {
   if (!s || typeof s !== 'object') s = structuredClone(DEFAULT_STATE);
   if (!Array.isArray(s.mieter)) s.mieter = [];
@@ -115,7 +119,7 @@ async function signUpWithEmail() {
     const { error } = await supabase.auth.signUp({
       email,
       password,
-      options: { emailRedirectTo: window.location.origin + window.location.pathname }
+      options: { emailRedirectTo: authRedirectUrl() }
     });
     if (error) throw error;
     setStatus('Konto angelegt. Falls E-Mail-Bestätigung aktiv ist: bitte Bestätigungslink öffnen; danach hier anmelden.', 'success');
@@ -134,7 +138,7 @@ async function resendConfirmationEmail() {
     const { error } = await supabase.auth.resend({
       type: 'signup',
       email,
-      options: { emailRedirectTo: window.location.origin + window.location.pathname }
+      options: { emailRedirectTo: authRedirectUrl() }
     });
     if (error) throw error;
     setStatus('Bestätigungs-E-Mail wurde erneut gesendet. Bitte Postfach prüfen.', 'success');

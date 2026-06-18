@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E-Mail bestätigt – Immo Dashboard</title>
+  <link rel="stylesheet" href="style.css?v=14">
+  <style>
+    body { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    .confirm-card {
+      width: min(460px, 100%);
+      background: #fff;
+      border: 1px solid rgba(15,23,42,.08);
+      border-radius: 24px;
+      box-shadow: 0 24px 80px rgba(15,23,42,.14);
+      padding: 32px;
+      text-align: center;
+    }
+    .confirm-logo {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 16px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: #ecfdf5;
+      color: #047857;
+      font-size: 30px;
+      font-weight: 800;
+    }
+    .confirm-card h1 { margin: 0 0 10px; font-size: 1.7rem; }
+    .confirm-card p { color: #64748b; line-height: 1.55; margin: 0 0 20px; }
+    .confirm-actions { display: grid; gap: 10px; margin-top: 22px; }
+    .small-note { font-size: .85rem; color: #94a3b8; margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <main class="confirm-card">
+    <div class="confirm-logo">✓</div>
+    <h1>E-Mail bestätigt</h1>
+    <p>Dein Konto ist bestätigt. Du kannst dich jetzt im Immo Dashboard anmelden.</p>
+    <div class="confirm-actions">
+      <a class="btn-primary" href="./">Zum Immo Dashboard</a>
+    </div>
+    <div class="small-note">Falls du auf dem Handy bist: Die Anmeldung funktioniert über die öffentliche Dashboard-Adresse.</div>
+  </main>
+</body>
+</html>
